@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+._*
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Runtime (never committed)
+*.log
+*.lock
