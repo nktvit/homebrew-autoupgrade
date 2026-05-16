@@ -9,11 +9,20 @@ A running list of things to fix, polish, or build. Loosely prioritised.
 - [x] **Symlink-aware `SCRIPT_PATH`** — plist always points at the canonical script even when invoked via the alias.
 - [x] **Self-upgrade detection** — log a line when `brew update` pulls a newer version of this script into the tap.
 
-## 1.0.2 — small bug-fix release
+## 1.0.2 — shipped (wizard polish)
+
+- [x] **Default schedule is now time window** instead of "Anytime" — most users want overnight upgrades.
+- [x] **"Anytime" reworded** to "Any time of day — upgrades may run while you're working", which is what no-restriction actually means.
+- [x] **`[↵]` hints on every wizard prompt** so it's obvious what pressing Enter will do.
+- [x] **Optional initial upgrade as final wizard step** — fixes the awkward "Last run: Never" right after setup; streams output to the terminal.
+- [x] **"Useful commands" hint uses the `brew au` alias** since that's what you'll actually type.
+
+## 1.0.3 — small bug-fix release
 
 - [ ] **Tighten the `--window` regex.** Currently accepts `25:99-29:00`; should be `(?:[01][0-9]|2[0-3]):[0-5][0-9]` on both sides.
 - [ ] **Reject `--window 03:00-03:00`** (start == end produces an unreachable window).
 - [ ] **Error on conflicting flags.** `brew au run --all --selected` silently takes the last flag; should fail loudly.
+- [ ] **`gum` integration as optional prettier wizard.** Detect at runtime, use for `confirm`/`choose`/`input` if installed, fall back to current text prompts otherwise. Same pattern as fzf.
 
 ## 1.1 — polish
 

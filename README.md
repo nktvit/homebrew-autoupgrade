@@ -33,12 +33,13 @@ The combined effect: open the lid after a week away and you get **one** upgrade 
 
 ## What it feels like
 
-Setup is a four-question wizard:
+Setup is a five-question wizard. Every prompt has a sensible default, and pressing `↵` accepts it.
 
 1. **All packages, or selected?** If you have more than 50 things installed it nudges you toward selected mode with a `💡` hint about battery and breakage.
 2. **Pick the packages.** If you have `fzf` it launches a multi-select with a `brew info` preview pane. If you don't, it offers to install fzf for you; decline and it falls back to a numbered list.
-3. **Time window?** Defaults to `02:00-06:00`. Anything goes — `23:00-05:00` and other midnight-spanning ranges work fine.
+3. **Time window?** Defaults to **a window**, not "anytime" — overnight is what almost everyone wants. The default range is `02:00-06:00`. Anything goes — `23:00-05:00` and other midnight-spanning ranges work fine.
 4. **Start the service now?** Yes by default.
+5. **Run an upgrade right now?** Yes by default — gives you instant feedback that everything works, and avoids the awkward "Last run: Never" in `status` right after setup.
 
 > **One thing to know about windows:** the service polls every 4 hours and decides on each wakeup whether to upgrade. That means a window narrower than ~4 hours might not catch a tick on any given day — you'd fall through to the 48h catch-up instead. If you want truly daily upgrades, give it a 4-hour window or wider (the default `02:00-06:00` is sized for exactly this reason).
 
