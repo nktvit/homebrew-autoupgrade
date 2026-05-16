@@ -6,7 +6,7 @@ set -euo pipefail
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 PLIST_LABEL="com.brew-autoupgrade"
 
 # Resolve Homebrew prefix (Apple Silicon vs Intel)
@@ -173,7 +173,7 @@ cmd_setup() {
     echo "How would you like to upgrade packages?"
     echo "  [1] All packages (easy, upgrades everything)"
     echo "  [2] Selected packages only (recommended for large installations)"
-    printf "Choice [%d]: " "$default_mode"
+    printf "Choice [%d, ↵ to confirm]: " "$default_mode"
     read -r mode_choice
     mode_choice="${mode_choice:-$default_mode}"
 
@@ -202,7 +202,7 @@ cmd_setup() {
                     --layout=reverse 2>/dev/null || true )"
         else
             echo "fzf is not installed. It provides a much better package selection experience."
-            printf "Install fzf now? [Y/n]: "
+            printf "Install fzf now? [Y/n, ↵ for yes]: "
             read -r install_fzf
             install_fzf="${install_fzf:-y}"
 
@@ -255,14 +255,14 @@ cmd_setup() {
     # Step 3: Schedule window
     echo ""
     echo "When should upgrades run?"
-    echo "  [1] Anytime (no restriction)"
-    echo "  [2] Set a time window (e.g., overnight)"
-    printf "Choice [1]: "
+    echo "  [1] Set a time window — overnight, while you're asleep (recommended)"
+    echo "  [2] Any time of day — upgrades may run while you're working"
+    printf "Choice [1, ↵ to confirm]: "
     read -r sched_choice
     sched_choice="${sched_choice:-1}"
 
-    if [[ "$sched_choice" == "2" ]]; then
-        printf "Enter time window (HH:MM-HH:MM) [02:00-06:00]: "
+    if [[ "$sched_choice" == "1" ]]; then
+        printf "Enter time window (HH:MM-HH:MM) [02:00-06:00, ↵ to use default]: "
         read -r window_input
         window_input="${window_input:-02:00-06:00}"
         local w_start w_end
@@ -275,15 +275,15 @@ EOF
         echo "✓ Schedule window set to ${w_start} - ${w_end}."
     else
         rm -f "$SCHEDULE_CONF"
-        echo "✓ No time window restriction — upgrades can run anytime."
+        echo "✓ No time restriction — upgrades may run any time of day."
     fi
 
     # Step 4: Start service
     echo ""
     echo "Start the background upgrade service now?"
     echo "  [y] Yes (recommended)"
-    echo "  [n] No, I'll start it later with 'brew autoupgrade start'"
-    printf "Choice [y]: "
+    echo "  [n] No, I'll start it later with 'brew au start'"
+    printf "Choice [y, ↵ for yes]: "
     read -r start_choice
     start_choice="${start_choice:-y}"
 
@@ -291,6 +291,21 @@ EOF
     if [[ "$start_choice" =~ ^[Yy] ]]; then
         cmd_start "--${upgrade_mode}"
         service_status="Running"
+    fi
+
+    # Step 5: Optional initial upgrade — gives instant feedback that it works
+    # and avoids the "Last run: Never" awkwardness right after setup.
+    echo ""
+    echo "Run an upgrade now to confirm everything works?"
+    echo "  [y] Yes — upgrade now (output streams here; may take a few minutes)"
+    echo "  [n] No, wait for the scheduled run"
+    printf "Choice [y, ↵ for yes]: "
+    read -r run_now
+    run_now="${run_now:-y}"
+    local ran_initial=0
+    if [[ "$run_now" =~ ^[Yy] ]]; then
+        run_initial_upgrade "$upgrade_mode"
+        ran_initial=1
     fi
 
     # Mark setup done
@@ -318,20 +333,60 @@ EOF
     echo "   Mode:     ${mode_display}"
     echo "   Schedule: ${sched_display}"
     echo "   Service:  ${service_status}"
+    if (( ran_initial )); then
+        echo "   Last run: just now"
+    fi
     echo ""
-    echo "Useful commands:"
-    echo "  brew autoupgrade status    — check service status"
-    echo "  brew autoupgrade add <pkg> — add a package to the allowlist"
-    echo "  brew autoupgrade list      — view selected packages"
-    echo "  brew autoupgrade stop      — stop the background service"
+    echo "Useful commands (the 'au' alias works for every subcommand):"
+    echo "  brew au status        — check service status"
+    echo "  brew au add <pkg>     — add a package to the allowlist"
+    echo "  brew au list          — view selected packages"
+    echo "  brew au run --${upgrade_mode}  — upgrade now"
+    echo "  brew au stop          — stop the background service"
     echo ""
+}
+
+run_initial_upgrade() {
+    # A wizard-time upgrade that streams to the terminal (cmd_run is silent
+    # because it's designed for launchd). Skips the lock/dedup/window machinery
+    # since the user is sitting here asking for it. Still updates last-run so
+    # the scheduled service won't double-fire within 23h.
+    local mode="$1"
+    echo ""
+    echo "─── Running initial upgrade ────────────────────────"
+    echo "» brew update"
+    if ! "$BREW" update; then
+        echo "Warning: 'brew update' had issues. Continuing anyway."
+    fi
+
+    if [[ "$mode" == "all" ]]; then
+        echo ""
+        echo "» brew upgrade"
+        "$BREW" upgrade || echo "Some packages failed to upgrade (see output above)."
+    else
+        if [[ ! -f "$ALLOWLIST" ]] || [[ ! -s "$ALLOWLIST" ]]; then
+            echo "Allowlist is empty — nothing to upgrade."
+        else
+            local pkg
+            while IFS= read -r pkg; do
+                [[ -z "$pkg" ]] && continue
+                echo ""
+                echo "» brew upgrade ${pkg}"
+                "$BREW" upgrade "$pkg" || echo "Warning: failed to upgrade '${pkg}'."
+            done < "$ALLOWLIST"
+        fi
+    fi
+
+    date +%s > "$LAST_RUN_FILE"
+    echo ""
+    echo "─── Initial upgrade complete ───────────────────────"
 }
 
 maybe_run_setup() {
     # Auto-trigger setup wizard on first run (interactive terminal only)
     if [[ ! -f "$SETUP_DONE" ]] && [[ -t 0 ]]; then
         echo "It looks like this is your first time running brew-autoupgrade."
-        printf "Would you like to run the setup wizard? [Y/n]: "
+        printf "Would you like to run the setup wizard? [Y/n, ↵ for yes]: "
         read -r run_setup
         run_setup="${run_setup:-y}"
         if [[ "$run_setup" =~ ^[Yy] ]]; then
