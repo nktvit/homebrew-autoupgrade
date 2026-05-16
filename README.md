@@ -66,12 +66,12 @@ brew au add ripgrep        # validates it's actually installed first
 brew au remove ripgrep
 brew au schedule --window 02:00-06:00
 brew au schedule --clear
-brew au run --selected     # upgrade now (still honours the lock + dedup)
-brew au start --selected   # turn the background service on
+brew au run                # upgrade now, using the mode you set during setup
+brew au start              # start the background service, using that same mode
 brew au stop               # turn it off
 ```
 
-`start` and `run` always need an explicit `--all` or `--selected` — no magic default. The wizard threads the right one through for you.
+`run` and `start` remember the mode you chose during `setup` (stored in `~/.config/brew-autoupgrade/mode`). Pass `--all` or `--selected` explicitly when you want to override it.
 
 ## The light stuff under the hood
 
@@ -93,6 +93,7 @@ The whole thing is ~850 lines of bash, no Ruby, no compiled binaries, no residen
 |---|---|
 | `~/.config/brew-autoupgrade/allowlist.txt` | Your selected packages, one per line |
 | `~/.config/brew-autoupgrade/schedule.conf` | Two `KEY=VALUE` lines |
+| `~/.config/brew-autoupgrade/mode` | One word: `all` or `selected` — what `brew au run`/`start` default to |
 | `~/.config/brew-autoupgrade/last-run` | A single epoch timestamp — the entire state machine |
 | `~/Library/Logs/brew-autoupgrade.log` | Timestamped run log |
 | `~/Library/LaunchAgents/com.brew-autoupgrade.plist` | Generated on `start`, deleted on `stop` |

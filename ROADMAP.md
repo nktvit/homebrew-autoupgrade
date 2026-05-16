@@ -17,7 +17,13 @@ A running list of things to fix, polish, or build. Loosely prioritised.
 - [x] **Optional initial upgrade as final wizard step** — fixes the awkward "Last run: Never" right after setup; streams output to the terminal.
 - [x] **"Useful commands" hint uses the `brew au` alias** since that's what you'll actually type.
 
-## 1.0.3 — small bug-fix release
+## 1.0.3 — shipped (alias-everywhere + smart defaults)
+
+- [x] **Every user-facing message uses `brew au`** instead of `brew autoupgrade`. The long form still works; it's just no longer what we suggest.
+- [x] **`brew au run` and `brew au start` no longer require a flag** — they default to the mode you chose during `setup` (persisted to `~/.config/brew-autoupgrade/mode`), falling back to `--selected` if no choice has been recorded yet.
+- [x] **Legacy auto-migration** — existing installs without a `mode` file get one written on their first run, derived from whatever the launchd plist passed.
+
+## 1.0.4 — small bug-fix release
 
 - [ ] **Tighten the `--window` regex.** Currently accepts `25:99-29:00`; should be `(?:[01][0-9]|2[0-3]):[0-5][0-9]` on both sides.
 - [ ] **Reject `--window 03:00-03:00`** (start == end produces an unreachable window).
