@@ -62,8 +62,10 @@ Both `brew autoupgrade` and the shorter `brew au` work for every command.
 brew au setup              # the wizard
 brew au status             # service / allowlist / schedule / last run
 brew au list               # show your allowlist
-brew au add ripgrep        # validates it's actually installed first
-brew au remove ripgrep
+brew au add               # interactive multi-select picker (fzf)
+brew au add ripgrep bun   # batch add — reports ✓ added / - already present / ✗ not installed
+brew au remove            # interactive multi-select over your current allowlist
+brew au remove ripgrep bun  # batch remove — reports ✓ removed / ✗ not in allowlist
 brew au schedule --window 02:00-06:00
 brew au schedule --clear
 brew au run                # upgrade now, using the mode you set during setup

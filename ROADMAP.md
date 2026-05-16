@@ -31,7 +31,14 @@ A running list of things to fix, polish, or build. Loosely prioritised.
 
 - [x] **`status` shows what packages were upgraded on the last run.** Implemented via `brew list --versions` snapshots before & after the upgrade phase, joined on package name to detect actual version changes. Stored in `~/.config/brew-autoupgrade/last-changes`. Truncated to 10 lines in `status` with a "... and N more" footer for big upgrade runs.
 
-## 1.0.6 — small bug-fix release
+## 1.0.6 — shipped (interactive add/remove + small refactor)
+
+- [x] **`brew au add` / `brew au remove` accept multiple packages** and report per-package outcome (`✓ added / - already present / ✗ not installed`, summary line).
+- [x] **`brew au add` / `brew au remove` with no args open an fzf multi-select picker** (the same one used by the wizard). For `add`, the candidate list is "installed packages not already in your allowlist"; for `remove`, it's the current allowlist.
+- [x] **Extracted helpers** for reuse: `count_lines`, `read_window`, `installed_packages`, `pick_packages`. Collapsed ~25 lines of duplication and locked the picker behind a single function so future flows can call it too.
+- [x] **Bash 3.2 portability** — replaced `declare -A` / `mapfile` with portable alternatives. The script now runs on stock macOS `/bin/bash` (3.2.57) without needing brew's bash 4+.
+
+## 1.0.7 — small bug-fix release
 
 - [ ] **Tighten the `--window` regex.** Currently accepts `25:99-29:00`; should be `(?:[01][0-9]|2[0-3]):[0-5][0-9]` on both sides.
 - [ ] **Normalise zero-padded hours in the setup wizard.** Right now typing `1:00-4:00` is stored as-is and `status` shows `01:00 - 4:00`. Either reject or pad to `01:00-04:00`.

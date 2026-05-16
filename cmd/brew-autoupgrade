@@ -6,7 +6,7 @@ set -euo pipefail
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-VERSION="1.0.5"
+VERSION="1.0.6"
 PLIST_LABEL="com.brew-autoupgrade"
 
 # Resolve Homebrew prefix (Apple Silicon vs Intel)
@@ -100,6 +100,93 @@ default_mode() {
     echo "selected"
 }
 
+# Lines in a file, or 0 if absent. Trimmed for arithmetic-safe use.
+count_lines() {
+    [[ -f "$1" ]] || { echo 0; return; }
+    wc -l < "$1" | tr -d ' '
+}
+
+# Echoes "$start $end" if a window is configured, nothing otherwise.
+read_window() {
+    [[ -f "$SCHEDULE_CONF" ]] || return 0
+    local ws we
+    ws="$(grep '^WINDOW_START=' "$SCHEDULE_CONF" 2>/dev/null | cut -d= -f2)" || true
+    we="$(grep '^WINDOW_END=' "$SCHEDULE_CONF" 2>/dev/null | cut -d= -f2)" || true
+    [[ -n "$ws" && -n "$we" ]] && echo "$ws $we"
+}
+
+# Sorted list of every installed formula + cask, one per line.
+installed_packages() {
+    {
+        "$BREW" list --formula 2>/dev/null
+        "$BREW" list --cask 2>/dev/null
+    } | sort -u
+}
+
+# Reads candidate package names from stdin and writes the user's picks to stdout.
+# Prompts and UI go to /dev/tty so the pipe stays clean. Empty stdin → no-op.
+pick_packages() {
+    local header="$1" prompt="$2"
+    local candidates
+    candidates="$(cat)"
+    [[ -z "$candidates" ]] && return 0
+
+    if command -v fzf &>/dev/null; then
+        echo "$candidates" | fzf --multi \
+            --header="$header" \
+            --prompt="$prompt" \
+            --preview="${BREW} info {}" \
+            --height=40% \
+            --layout=reverse 2>/dev/null || true
+        return
+    fi
+
+    {
+        echo "fzf is not installed. It provides a much better selection experience."
+        printf "Install fzf now? [Y/n, ↵ for yes]: "
+    } > /dev/tty
+    local install_fzf
+    read -r install_fzf < /dev/tty
+    install_fzf="${install_fzf:-y}"
+
+    if [[ "$install_fzf" =~ ^[Yy] ]]; then
+        echo "Installing fzf..." > /dev/tty
+        "$BREW" install fzf > /dev/tty 2>&1
+        echo "$candidates" | fzf --multi \
+            --header="$header" \
+            --prompt="$prompt" \
+            --preview="${BREW} info {}" \
+            --height=40% \
+            --layout=reverse 2>/dev/null || true
+        return
+    fi
+
+    # Numbered-list fallback
+    local -a items=()
+    local line
+    while IFS= read -r line; do items+=("$line"); done <<< "$candidates"
+    {
+        echo ""
+        local i
+        for i in "${!items[@]}"; do
+            printf "  %3d) %s\n" "$((i + 1))" "${items[$i]}"
+        done
+        echo ""
+        printf "Enter numbers separated by spaces (e.g., \"1 3 5\"), or press Enter to skip: "
+    } > /dev/tty
+    local num_input
+    read -r num_input < /dev/tty
+    if [[ -n "$num_input" ]]; then
+        local n idx
+        for n in $num_input; do
+            idx=$((n - 1))
+            if (( idx >= 0 && idx < ${#items[@]} )); then
+                echo "${items[$idx]}"
+            fi
+        done
+    fi
+}
+
 smart_hint() {
     local count
     count="$($BREW list 2>/dev/null | wc -l | tr -d ' ')"
@@ -126,16 +213,10 @@ time_to_minutes() {
 
 is_in_time_window() {
     # Returns 0 if current time is within the configured window, 1 otherwise
-    if [[ ! -f "$SCHEDULE_CONF" ]]; then
-        return 0  # No window configured — always in window
-    fi
-
     local window_start window_end
-    window_start="$(grep '^WINDOW_START=' "$SCHEDULE_CONF" 2>/dev/null | cut -d= -f2)" || true
-    window_end="$(grep '^WINDOW_END=' "$SCHEDULE_CONF" 2>/dev/null | cut -d= -f2)" || true
-
-    if [[ -z "$window_start" || -z "$window_end" ]]; then
-        return 0  # Incomplete config — treat as no window
+    read -r window_start window_end <<< "$(read_window)"
+    if [[ -z "${window_start:-}" || -z "${window_end:-}" ]]; then
+        return 0  # No window configured / incomplete — always in window
     fi
 
     local now_min start_min end_min
@@ -226,64 +307,19 @@ cmd_setup() {
         echo "You can always change this later with 'brew au add/remove'."
         echo ""
 
-        local selected_pkgs=""
-        if command -v fzf &>/dev/null; then
-            selected_pkgs="$( { $BREW list --formula 2>/dev/null; $BREW list --cask 2>/dev/null; } | sort -u | \
-                fzf --multi \
-                    --header="Navigate: ↑↓  Select: Tab  Confirm: Enter  Skip: Esc" \
-                    --prompt="Select packages to auto-upgrade > " \
-                    --preview="${BREW} info {}" \
-                    --height=40% \
-                    --layout=reverse 2>/dev/null || true )"
-        else
-            echo "fzf is not installed. It provides a much better package selection experience."
-            printf "Install fzf now? [Y/n, ↵ for yes]: "
-            read -r install_fzf
-            install_fzf="${install_fzf:-y}"
+        local selected_pkgs
+        selected_pkgs="$(installed_packages | pick_packages \
+            "Navigate: ↑↓  Select: Tab  Confirm: Enter  Skip: Esc" \
+            "Select packages to auto-upgrade > ")"
 
-            if [[ "$install_fzf" =~ ^[Yy] ]]; then
-                echo "Installing fzf..."
-                $BREW install fzf
-                selected_pkgs="$( { $BREW list --formula 2>/dev/null; $BREW list --cask 2>/dev/null; } | sort -u | \
-                    fzf --multi \
-                        --header="Navigate: ↑↓  Select: Tab  Confirm: Enter  Skip: Esc" \
-                        --prompt="Select packages to auto-upgrade > " \
-                        --preview="${BREW} info {}" \
-                        --height=40% \
-                        --layout=reverse 2>/dev/null || true )"
-            else
-                # Fallback: numbered list
-                echo ""
-                local -a pkgs
-                mapfile -t pkgs < <({ $BREW list --formula 2>/dev/null; $BREW list --cask 2>/dev/null; } | sort -u)
-                local i
-                for i in "${!pkgs[@]}"; do
-                    printf "  %3d) %s\n" "$((i + 1))" "${pkgs[$i]}"
-                done
-                echo ""
-                echo "Enter package numbers separated by spaces (e.g., \"1 3 5\"),"
-                printf "or press Enter to skip: "
-                read -r num_input
-                if [[ -n "$num_input" ]]; then
-                    for n in $num_input; do
-                        local idx=$((n - 1))
-                        if (( idx >= 0 && idx < ${#pkgs[@]} )); then
-                            selected_pkgs+="${pkgs[$idx]}"$'\n'
-                        fi
-                    done
-                fi
-            fi
-        fi
-
-        # Write selected packages to allowlist
         if [[ -n "$selected_pkgs" ]]; then
             echo "$selected_pkgs" | sed '/^$/d' | sort -u > "$ALLOWLIST"
             local sel_count
-            sel_count="$(wc -l < "$ALLOWLIST" | tr -d ' ')"
+            sel_count="$(count_lines "$ALLOWLIST")"
             echo "✓ Added ${sel_count} package(s) to your allowlist."
         else
             touch "$ALLOWLIST"
-            echo "No packages selected. You can add them later with 'brew au add <pkg>'."
+            echo "No packages selected. You can add them later with 'brew au add'."
         fi
     fi
 
@@ -350,16 +386,15 @@ EOF
     local mode_display sel_info="" sched_display="Anytime"
     if [[ "$upgrade_mode" == "selected" ]]; then
         local ac=0
-        [[ -f "$ALLOWLIST" ]] && ac="$(wc -l < "$ALLOWLIST" | tr -d ' ')"
+        ac="$(count_lines "$ALLOWLIST")"
         mode_display="Selected packages (${ac} packages)"
     else
         mode_display="All packages"
     fi
 
-    if [[ -f "$SCHEDULE_CONF" ]]; then
-        local ws we
-        ws="$(grep '^WINDOW_START=' "$SCHEDULE_CONF" | cut -d= -f2)"
-        we="$(grep '^WINDOW_END=' "$SCHEDULE_CONF" | cut -d= -f2)"
+    local ws we
+    read -r ws we <<< "$(read_window)"
+    if [[ -n "${ws:-}" && -n "${we:-}" ]]; then
         sched_display="${ws} - ${we}"
     fi
 
@@ -425,7 +460,7 @@ run_initial_upgrade() {
     echo ""
     if [[ -s "$LAST_CHANGES_FILE" ]]; then
         local changed_n
-        changed_n="$(wc -l < "$LAST_CHANGES_FILE" | tr -d ' ')"
+        changed_n="$(count_lines "$LAST_CHANGES_FILE")"
         echo "Upgraded ${changed_n} package(s):"
         sed 's/^/  /' "$LAST_CHANGES_FILE"
     else
@@ -465,8 +500,8 @@ Usage:
 Commands:
   setup                       Run the interactive setup wizard
   status                      Show service status, schedule, and allowlist info
-  add <package>               Add a package to the auto-upgrade allowlist
-  remove <package>            Remove a package from the allowlist
+  add [package...]            Add packages to the allowlist (interactive picker if no args)
+  remove [package...]         Remove packages from the allowlist (interactive picker if no args)
   list                        Show all packages in the allowlist
   schedule [options]          Configure upgrade time window
   run [--all | --selected]    Execute upgrades now (defaults to saved mode)
@@ -521,22 +556,17 @@ cmd_status() {
     # Allowlist
     if [[ -f "$ALLOWLIST" && -s "$ALLOWLIST" ]]; then
         local count
-        count="$(wc -l < "$ALLOWLIST" | tr -d ' ')"
+        count="$(count_lines "$ALLOWLIST")"
         echo "Allowlist:  ${count} package(s)"
     else
         echo "Allowlist:  Empty"
     fi
 
     # Schedule
-    if [[ -f "$SCHEDULE_CONF" ]]; then
-        local ws we
-        ws="$(grep '^WINDOW_START=' "$SCHEDULE_CONF" 2>/dev/null | cut -d= -f2)" || true
-        we="$(grep '^WINDOW_END=' "$SCHEDULE_CONF" 2>/dev/null | cut -d= -f2)" || true
-        if [[ -n "$ws" && -n "$we" ]]; then
-            echo "Schedule:   ${ws} - ${we}"
-        else
-            echo "Schedule:   Anytime"
-        fi
+    local ws we
+    read -r ws we <<< "$(read_window)"
+    if [[ -n "${ws:-}" && -n "${we:-}" ]]; then
+        echo "Schedule:   ${ws} - ${we}"
     else
         echo "Schedule:   Anytime"
     fi
@@ -563,7 +593,7 @@ cmd_status() {
     # Packages upgraded on the last run (snapshot diff, captured per run)
     if [[ -s "$LAST_CHANGES_FILE" ]]; then
         local changed_n
-        changed_n="$(wc -l < "$LAST_CHANGES_FILE" | tr -d ' ')"
+        changed_n="$(count_lines "$LAST_CHANGES_FILE")"
         echo ""
         echo "Last upgrade changed ${changed_n} package(s):"
         head -10 "$LAST_CHANGES_FILE" | sed 's/^/  /'
@@ -576,54 +606,148 @@ cmd_status() {
 }
 
 cmd_add() {
-    local pkg="${1:-}"
-    if [[ -z "$pkg" ]]; then
-        echo "Usage: brew au add <package>" >&2
-        exit 1
-    fi
-
-    # Validate the package is installed
-    if ! $BREW list --formula "$pkg" &>/dev/null && ! $BREW list --cask "$pkg" &>/dev/null; then
-        echo "Error: '${pkg}' is not installed. Install it first with 'brew install ${pkg}'." >&2
-        exit 1
-    fi
-
     ensure_config_dir
     touch "$ALLOWLIST"
 
-    # Check for duplicates
-    if grep -qx "$pkg" "$ALLOWLIST" 2>/dev/null; then
-        echo "'${pkg}' is already in the allowlist."
+    # No args → interactive picker (TTY required)
+    if [[ $# -eq 0 ]]; then
+        if [[ ! -t 0 ]]; then
+            echo "Usage: brew au add [package...] (or run interactively from a terminal)" >&2
+            exit 1
+        fi
+        local candidates picks
+        if [[ -s "$ALLOWLIST" ]]; then
+            candidates="$(installed_packages | grep -vxFf "$ALLOWLIST" 2>/dev/null || true)"
+        else
+            candidates="$(installed_packages)"
+        fi
+        if [[ -z "$candidates" ]]; then
+            echo "All your installed packages are already in the allowlist."
+            return 0
+        fi
+        picks="$(echo "$candidates" | pick_packages \
+            "Tab to select, Enter to confirm, Esc to cancel" \
+            "Add packages > ")"
+        if [[ -z "$picks" ]]; then
+            echo "No packages selected."
+            return 0
+        fi
+        local added=0 pkg
+        while IFS= read -r pkg; do
+            [[ -z "$pkg" ]] && continue
+            if ! grep -qxF "$pkg" "$ALLOWLIST" 2>/dev/null; then
+                echo "$pkg" >> "$ALLOWLIST"
+                added=$((added + 1))
+            fi
+        done <<< "$picks"
+        echo "✓ Added ${added} package(s) to the allowlist."
         return 0
     fi
 
-    echo "$pkg" >> "$ALLOWLIST"
-    echo "✓ Added '${pkg}' to the auto-upgrade allowlist."
+    # 1+ args → batch add, per-package classification
+    local added=0 already=0 missing=0
+    local pkg seen=":"
+    for pkg in "$@"; do
+        [[ "$seen" == *":${pkg}:"* ]] && continue
+        seen="${seen}${pkg}:"
+        if ! "$BREW" list --formula "$pkg" &>/dev/null && ! "$BREW" list --cask "$pkg" &>/dev/null; then
+            echo "✗ '${pkg}' is not installed (run 'brew install ${pkg}' first)."
+            missing=$((missing + 1))
+        elif grep -qxF "$pkg" "$ALLOWLIST" 2>/dev/null; then
+            echo "- '${pkg}' is already in the allowlist."
+            already=$((already + 1))
+        else
+            echo "$pkg" >> "$ALLOWLIST"
+            echo "✓ Added '${pkg}'."
+            added=$((added + 1))
+        fi
+    done
+
+    local parts=()
+    (( added > 0 )) && parts+=("${added} added")
+    (( already > 0 )) && parts+=("${already} already present")
+    (( missing > 0 )) && parts+=("${missing} not installed")
+    if (( ${#parts[@]} > 0 )); then
+        echo ""
+        local joined
+        joined="$(printf '%s, ' "${parts[@]}")"
+        echo "Summary: ${joined%, }."
+    fi
 }
 
 cmd_remove() {
-    local pkg="${1:-}"
-    if [[ -z "$pkg" ]]; then
-        echo "Usage: brew au remove <package>" >&2
-        exit 1
+    ensure_config_dir
+
+    # No args → interactive picker (TTY required)
+    if [[ $# -eq 0 ]]; then
+        if [[ ! -t 0 ]]; then
+            echo "Usage: brew au remove [package...] (or run interactively from a terminal)" >&2
+            exit 1
+        fi
+        if [[ ! -s "$ALLOWLIST" ]]; then
+            echo "The allowlist is empty — nothing to remove."
+            return 0
+        fi
+        local picks
+        picks="$(pick_packages \
+            "Tab to select, Enter to remove, Esc to cancel" \
+            "Remove packages > " < "$ALLOWLIST")"
+        if [[ -z "$picks" ]]; then
+            echo "No packages selected."
+            return 0
+        fi
+        local picks_file tmpfile count
+        picks_file="$(mktemp)"
+        tmpfile="$(mktemp)"
+        echo "$picks" | sed '/^$/d' > "$picks_file"
+        count="$(count_lines "$picks_file")"
+        grep -vxFf "$picks_file" "$ALLOWLIST" > "$tmpfile" 2>/dev/null || true
+        mv "$tmpfile" "$ALLOWLIST"
+        rm -f "$picks_file"
+        echo "✓ Removed ${count} package(s) from the allowlist."
+        return 0
     fi
 
-    if [[ ! -f "$ALLOWLIST" ]] || ! grep -qx "$pkg" "$ALLOWLIST" 2>/dev/null; then
-        echo "Error: '${pkg}' is not in the allowlist." >&2
-        exit 1
+    # 1+ args → batch remove
+    if [[ ! -f "$ALLOWLIST" ]]; then touch "$ALLOWLIST"; fi
+    local removed=0 missing=0 pkg seen=":"
+    local picks_file
+    picks_file="$(mktemp)"
+    for pkg in "$@"; do
+        [[ "$seen" == *":${pkg}:"* ]] && continue
+        seen="${seen}${pkg}:"
+        if grep -qxF "$pkg" "$ALLOWLIST" 2>/dev/null; then
+            echo "$pkg" >> "$picks_file"
+            echo "✓ Removed '${pkg}'."
+            removed=$((removed + 1))
+        else
+            echo "✗ '${pkg}' was not in the allowlist."
+            missing=$((missing + 1))
+        fi
+    done
+    if (( removed > 0 )); then
+        local tmpfile
+        tmpfile="$(mktemp)"
+        grep -vxFf "$picks_file" "$ALLOWLIST" > "$tmpfile" 2>/dev/null || true
+        mv "$tmpfile" "$ALLOWLIST"
     fi
+    rm -f "$picks_file"
 
-    local tmpfile
-    tmpfile="$(mktemp)"
-    grep -vx "$pkg" "$ALLOWLIST" > "$tmpfile"
-    mv "$tmpfile" "$ALLOWLIST"
-    echo "✓ Removed '${pkg}' from the auto-upgrade allowlist."
+    local parts=()
+    (( removed > 0 )) && parts+=("${removed} removed")
+    (( missing > 0 )) && parts+=("${missing} not found")
+    if (( ${#parts[@]} > 0 )); then
+        echo ""
+        local joined
+        joined="$(printf '%s, ' "${parts[@]}")"
+        echo "Summary: ${joined%, }."
+    fi
 }
 
 cmd_list() {
     if [[ ! -f "$ALLOWLIST" || ! -s "$ALLOWLIST" ]]; then
         echo "The allowlist is empty."
-        echo "Add packages with: brew au add <package>"
+        echo "Add packages with: brew au add (interactive) or brew au add <package>..."
         return 0
     fi
 
@@ -632,26 +756,20 @@ cmd_list() {
         echo "  - ${pkg}"
     done < "$ALLOWLIST"
     echo ""
-    echo "$(wc -l < "$ALLOWLIST" | tr -d ' ') package(s) total."
+    echo "$(count_lines "$ALLOWLIST") package(s) total."
 }
 
 cmd_schedule() {
     ensure_config_dir
 
     if [[ $# -eq 0 ]]; then
-        # Display current schedule
-        if [[ -f "$SCHEDULE_CONF" ]]; then
-            local ws we
-            ws="$(grep '^WINDOW_START=' "$SCHEDULE_CONF" 2>/dev/null | cut -d= -f2)" || true
-            we="$(grep '^WINDOW_END=' "$SCHEDULE_CONF" 2>/dev/null | cut -d= -f2)" || true
-            if [[ -n "$ws" && -n "$we" ]]; then
-                echo "Current upgrade window: ${ws} - ${we}"
-                echo ""
-                echo "Upgrades will only run during this window."
-                echo "If the window is missed for 48+ hours, a catch-up upgrade will run."
-            else
-                echo "No time window configured. Upgrades can run anytime."
-            fi
+        local ws we
+        read -r ws we <<< "$(read_window)"
+        if [[ -n "${ws:-}" && -n "${we:-}" ]]; then
+            echo "Current upgrade window: ${ws} - ${we}"
+            echo ""
+            echo "Upgrades will only run during this window."
+            echo "If the window is missed for 48+ hours, a catch-up upgrade will run."
         else
             echo "No time window configured. Upgrades can run anytime."
         fi
@@ -864,7 +982,7 @@ cmd_run() {
 
     if [[ -s "$LAST_CHANGES_FILE" ]]; then
         local changed_n
-        changed_n="$(wc -l < "$LAST_CHANGES_FILE" | tr -d ' ')"
+        changed_n="$(count_lines "$LAST_CHANGES_FILE")"
         log_msg "Upgraded ${changed_n} package(s):"
         while IFS= read -r line; do log_msg "  ${line}"; done < "$LAST_CHANGES_FILE"
     else
@@ -901,7 +1019,7 @@ cmd_start() {
     if [[ "$mode" == "selected" ]]; then
         if [[ ! -f "$ALLOWLIST" || ! -s "$ALLOWLIST" ]]; then
             echo "⚠️  Warning: The allowlist is empty. The service will run but won't upgrade anything."
-            echo "   Add packages with: brew au add <package>"
+            echo "   Add packages with: brew au add (interactive) or brew au add <package>..."
         fi
     fi
 
@@ -945,10 +1063,9 @@ PLIST
     if launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null; then
         echo "✓ Background upgrade service started (mode: ${mode})."
         echo "  The service checks every 4 hours and upgrades once daily."
-        if [[ -f "$SCHEDULE_CONF" ]]; then
-            local ws we
-            ws="$(grep '^WINDOW_START=' "$SCHEDULE_CONF" | cut -d= -f2)"
-            we="$(grep '^WINDOW_END=' "$SCHEDULE_CONF" | cut -d= -f2)"
+        local ws we
+        read -r ws we <<< "$(read_window)"
+        if [[ -n "${ws:-}" && -n "${we:-}" ]]; then
             echo "  Upgrade window: ${ws} - ${we}"
         fi
     else
