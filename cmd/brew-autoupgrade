@@ -6,7 +6,7 @@ set -euo pipefail
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-VERSION="1.0.4"
+VERSION="1.0.5"
 PLIST_LABEL="com.brew-autoupgrade"
 
 # Resolve Homebrew prefix (Apple Silicon vs Intel)
@@ -28,6 +28,7 @@ LAST_RUN_FILE="${CONFIG_DIR}/last-run"
 LOCK_FILE="${CONFIG_DIR}/.run.lock"
 SETUP_DONE="${CONFIG_DIR}/.setup-done"
 MODE_FILE="${CONFIG_DIR}/mode"        # remembers --all | --selected for run/start
+LAST_CHANGES_FILE="${CONFIG_DIR}/last-changes"   # "pkg X.Y.Z -> A.B.C" lines from last run
 
 # Log & plist
 LOG_FILE="${HOME}/Library/Logs/brew-autoupgrade.log"
@@ -68,6 +69,26 @@ log_msg() {
 }
 
 save_mode() { echo "$1" > "$MODE_FILE"; }
+
+# Print "pkg version" lines for every installed formula + cask, sorted.
+snapshot_versions() {
+    {
+        "$BREW" list --versions 2>/dev/null
+        "$BREW" list --cask --versions 2>/dev/null
+    } | sort -u
+}
+
+# Diffs two version-snapshot files and writes "pkg OLD -> NEW" lines to $1.
+# A package is considered "upgraded" when it appears in both snapshots with a
+# different version string. New installs and uninstalls are ignored on purpose
+# — this is about upgrades, not inventory changes.
+record_changes() {
+    local out="$1" pre="$2" post="$3"
+    : > "$out"
+    join -j 1 -o 1.1,1.2,2.2 "$pre" "$post" 2>/dev/null \
+        | awk '$2 != $3 { print $1, $2, "->", $3 }' \
+        > "$out"
+}
 
 # Echoes the saved mode if one exists, otherwise "selected" as a sensible default.
 default_mode() {
@@ -373,6 +394,11 @@ run_initial_upgrade() {
         echo "Warning: 'brew update' had issues. Continuing anyway."
     fi
 
+    local pre_snapshot post_snapshot
+    pre_snapshot="$(mktemp)"
+    post_snapshot="$(mktemp)"
+    snapshot_versions > "$pre_snapshot"
+
     if [[ "$mode" == "all" ]]; then
         echo ""
         echo "» brew upgrade"
@@ -391,8 +417,20 @@ run_initial_upgrade() {
         fi
     fi
 
+    snapshot_versions > "$post_snapshot"
+    record_changes "$LAST_CHANGES_FILE" "$pre_snapshot" "$post_snapshot"
+    rm -f "$pre_snapshot" "$post_snapshot"
+
     date +%s > "$LAST_RUN_FILE"
     echo ""
+    if [[ -s "$LAST_CHANGES_FILE" ]]; then
+        local changed_n
+        changed_n="$(wc -l < "$LAST_CHANGES_FILE" | tr -d ' ')"
+        echo "Upgraded ${changed_n} package(s):"
+        sed 's/^/  /' "$LAST_CHANGES_FILE"
+    else
+        echo "Nothing needed upgrading."
+    fi
     echo "─── Initial upgrade complete ───────────────────────"
 }
 
@@ -520,6 +558,18 @@ cmd_status() {
         local script_mtime
         script_mtime="$(stat -f '%Sm' -t '%Y-%m-%d %H:%M:%S' "$SCRIPT_PATH" 2>/dev/null || echo unknown)"
         echo "Updated:    ${script_mtime} (v${VERSION})"
+    fi
+
+    # Packages upgraded on the last run (snapshot diff, captured per run)
+    if [[ -s "$LAST_CHANGES_FILE" ]]; then
+        local changed_n
+        changed_n="$(wc -l < "$LAST_CHANGES_FILE" | tr -d ' ')"
+        echo ""
+        echo "Last upgrade changed ${changed_n} package(s):"
+        head -10 "$LAST_CHANGES_FILE" | sed 's/^/  /'
+        if (( changed_n > 10 )); then
+            echo "  ... and $((changed_n - 10)) more (see ${LAST_CHANGES_FILE})"
+        fi
     fi
 
     smart_hint
@@ -763,7 +813,12 @@ cmd_run() {
         fi
     fi
 
-    # Step 6: Execute upgrades
+    # Step 6: Snapshot versions, run upgrades, snapshot again, record what changed.
+    local pre_snapshot post_snapshot
+    pre_snapshot="$(mktemp)"
+    post_snapshot="$(mktemp)"
+    snapshot_versions > "$pre_snapshot"
+
     local exit_code=0
     if [[ "$mode" == "all" ]]; then
         log_msg "Upgrading all packages..."
@@ -777,6 +832,7 @@ cmd_run() {
         # Selected mode
         if [[ ! -f "$ALLOWLIST" || ! -s "$ALLOWLIST" ]]; then
             log_msg "NOTICE: Allowlist is empty. Nothing to upgrade."
+            rm -f "$pre_snapshot" "$post_snapshot"
             echo "$now" > "$LAST_RUN_FILE"
             exit 0
         fi
@@ -800,6 +856,19 @@ cmd_run() {
             log_msg "Failed packages:${failed_pkgs}"
             exit_code=1
         fi
+    fi
+
+    snapshot_versions > "$post_snapshot"
+    record_changes "$LAST_CHANGES_FILE" "$pre_snapshot" "$post_snapshot"
+    rm -f "$pre_snapshot" "$post_snapshot"
+
+    if [[ -s "$LAST_CHANGES_FILE" ]]; then
+        local changed_n
+        changed_n="$(wc -l < "$LAST_CHANGES_FILE" | tr -d ' ')"
+        log_msg "Upgraded ${changed_n} package(s):"
+        while IFS= read -r line; do log_msg "  ${line}"; done < "$LAST_CHANGES_FILE"
+    else
+        log_msg "No packages needed upgrading."
     fi
 
     # Step 7: Update last-run timestamp

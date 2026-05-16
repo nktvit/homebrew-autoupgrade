@@ -95,6 +95,7 @@ The whole thing is ~850 lines of bash, no Ruby, no compiled binaries, no residen
 | `~/.config/brew-autoupgrade/schedule.conf` | Two `KEY=VALUE` lines |
 | `~/.config/brew-autoupgrade/mode` | One word: `all` or `selected` — what `brew au run`/`start` default to |
 | `~/.config/brew-autoupgrade/last-run` | A single epoch timestamp — the entire state machine |
+| `~/.config/brew-autoupgrade/last-changes` | `pkg X.Y.Z -> A.B.C` lines from the last run, surfaced in `status` |
 | `~/Library/Logs/brew-autoupgrade.log` | Timestamped run log |
 | `~/Library/LaunchAgents/com.brew-autoupgrade.plist` | Generated on `start`, deleted on `stop` |
 
