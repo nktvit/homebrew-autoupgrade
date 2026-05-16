@@ -23,9 +23,14 @@ A running list of things to fix, polish, or build. Loosely prioritised.
 - [x] **`brew au run` and `brew au start` no longer require a flag** — they default to the mode you chose during `setup` (persisted to `~/.config/brew-autoupgrade/mode`), falling back to `--selected` if no choice has been recorded yet.
 - [x] **Legacy auto-migration** — existing installs without a `mode` file get one written on their first run, derived from whatever the launchd plist passed.
 
-## 1.0.4 — small bug-fix release
+## 1.0.4 — shipped
+
+- [x] **`status` now shows when the script was last updated** plus the running version (e.g. `Updated: 2026-05-16 22:17:47 (v1.0.4)`). Derived from the script file's mtime, which changes whenever `brew update` pulls a new tap revision.
+
+## 1.0.5 — small bug-fix release
 
 - [ ] **Tighten the `--window` regex.** Currently accepts `25:99-29:00`; should be `(?:[01][0-9]|2[0-3]):[0-5][0-9]` on both sides.
+- [ ] **Normalise zero-padded hours in the setup wizard.** Right now typing `1:00-4:00` is stored as-is and `status` shows `01:00 - 4:00`. Either reject or pad to `01:00-04:00`.
 - [ ] **Reject `--window 03:00-03:00`** (start == end produces an unreachable window).
 - [ ] **Error on conflicting flags.** `brew au run --all --selected` silently takes the last flag; should fail loudly.
 - [ ] **`gum` integration as optional prettier wizard.** Detect at runtime, use for `confirm`/`choose`/`input` if installed, fall back to current text prompts otherwise. Same pattern as fzf.
