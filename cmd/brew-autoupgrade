@@ -6,7 +6,7 @@ set -euo pipefail
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-VERSION="1.0.2"
+VERSION="1.0.3"
 PLIST_LABEL="com.brew-autoupgrade"
 
 # Resolve Homebrew prefix (Apple Silicon vs Intel)
@@ -27,6 +27,7 @@ SCHEDULE_CONF="${CONFIG_DIR}/schedule.conf"
 LAST_RUN_FILE="${CONFIG_DIR}/last-run"
 LOCK_FILE="${CONFIG_DIR}/.run.lock"
 SETUP_DONE="${CONFIG_DIR}/.setup-done"
+MODE_FILE="${CONFIG_DIR}/mode"        # remembers --all | --selected for run/start
 
 # Log & plist
 LOG_FILE="${HOME}/Library/Logs/brew-autoupgrade.log"
@@ -64,6 +65,18 @@ log_msg() {
     local timestamp
     timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
     echo "[${timestamp}] $*" >> "$LOG_FILE"
+}
+
+save_mode() { echo "$1" > "$MODE_FILE"; }
+
+# Echoes the saved mode if one exists, otherwise "selected" as a sensible default.
+default_mode() {
+    if [[ -f "$MODE_FILE" ]]; then
+        local m
+        m="$(cat "$MODE_FILE" 2>/dev/null)"
+        [[ "$m" == "all" || "$m" == "selected" ]] && { echo "$m"; return; }
+    fi
+    echo "selected"
 }
 
 smart_hint() {
@@ -183,12 +196,13 @@ cmd_setup() {
     else
         upgrade_mode="all"
     fi
+    save_mode "$upgrade_mode"
 
     # Step 2: Package selection (only for selected mode)
     if [[ "$upgrade_mode" == "selected" ]]; then
         echo ""
         echo "Let's pick packages to auto-upgrade."
-        echo "You can always change this later with 'brew autoupgrade add/remove'."
+        echo "You can always change this later with 'brew au add/remove'."
         echo ""
 
         local selected_pkgs=""
@@ -248,7 +262,7 @@ cmd_setup() {
             echo "✓ Added ${sel_count} package(s) to your allowlist."
         else
             touch "$ALLOWLIST"
-            echo "No packages selected. You can add them later with 'brew autoupgrade add <pkg>'."
+            echo "No packages selected. You can add them later with 'brew au add <pkg>'."
         fi
     fi
 
@@ -405,10 +419,10 @@ maybe_run_setup() {
 
 cmd_help() {
     cat <<'USAGE'
-brew autoupgrade — Automatically upgrade Homebrew packages
+brew au — Automatically upgrade Homebrew packages
 
 Usage:
-  brew autoupgrade <command> [options]
+  brew au <command> [options]
 
 Commands:
   setup                       Run the interactive setup wizard
@@ -417,8 +431,8 @@ Commands:
   remove <package>            Remove a package from the allowlist
   list                        Show all packages in the allowlist
   schedule [options]          Configure upgrade time window
-  run --all | --selected      Execute upgrades now
-  start --all | --selected    Start the background upgrade service (launchd)
+  run [--all | --selected]    Execute upgrades now (defaults to saved mode)
+  start [--all | --selected]  Start the background upgrade service (defaults to saved mode)
   stop                        Stop and remove the background service
   help                        Show this help message
   version                     Show version
@@ -428,12 +442,12 @@ Schedule options:
   --clear                     Remove time window restriction
 
 Examples:
-  brew autoupgrade setup
-  brew autoupgrade add node
-  brew autoupgrade add google-chrome
-  brew autoupgrade schedule --window 02:00-06:00
-  brew autoupgrade start --selected
-  brew autoupgrade run --all
+  brew au setup
+  brew au add node
+  brew au add google-chrome
+  brew au schedule --window 02:00-06:00
+  brew au start --selected
+  brew au run --all
 
 Config:    ~/.config/brew-autoupgrade/
 Log file:  ~/Library/Logs/brew-autoupgrade.log
@@ -459,7 +473,7 @@ cmd_status() {
             if [[ -n "$plist_script" && ! -f "$plist_script" ]]; then
                 echo "⚠️  Warning: The service points to a script that no longer exists:"
                 echo "            ${plist_script}"
-                echo "            Run 'brew autoupgrade stop' then 'brew autoupgrade start' to fix."
+                echo "            Run 'brew au stop' then 'brew au start' to fix."
             fi
         fi
     else
@@ -506,7 +520,7 @@ cmd_status() {
 cmd_add() {
     local pkg="${1:-}"
     if [[ -z "$pkg" ]]; then
-        echo "Usage: brew autoupgrade add <package>" >&2
+        echo "Usage: brew au add <package>" >&2
         exit 1
     fi
 
@@ -532,7 +546,7 @@ cmd_add() {
 cmd_remove() {
     local pkg="${1:-}"
     if [[ -z "$pkg" ]]; then
-        echo "Usage: brew autoupgrade remove <package>" >&2
+        echo "Usage: brew au remove <package>" >&2
         exit 1
     fi
 
@@ -551,7 +565,7 @@ cmd_remove() {
 cmd_list() {
     if [[ ! -f "$ALLOWLIST" || ! -s "$ALLOWLIST" ]]; then
         echo "The allowlist is empty."
-        echo "Add packages with: brew autoupgrade add <package>"
+        echo "Add packages with: brew au add <package>"
         return 0
     fi
 
@@ -590,7 +604,7 @@ cmd_schedule() {
         --window)
             local window="${2:-}"
             if [[ -z "$window" ]]; then
-                echo "Usage: brew autoupgrade schedule --window HH:MM-HH:MM" >&2
+                echo "Usage: brew au schedule --window HH:MM-HH:MM" >&2
                 exit 1
             fi
 
@@ -618,7 +632,7 @@ EOF
             echo "✓ Time window restriction removed. Upgrades can run anytime."
             ;;
         *)
-            echo "Usage: brew autoupgrade schedule [--window HH:MM-HH:MM | --clear]" >&2
+            echo "Usage: brew au schedule [--window HH:MM-HH:MM | --clear]" >&2
             exit 1
             ;;
     esac
@@ -633,12 +647,16 @@ cmd_run() {
         esac
     done
 
+    # No flag → use the mode set during setup/start, falling back to selected.
     if [[ -z "$mode" ]]; then
-        echo "Usage: brew autoupgrade run --all | --selected" >&2
-        exit 1
+        mode="$(default_mode)"
     fi
 
     ensure_config_dir
+
+    # Bootstrap the mode file for legacy installs where launchd already passes
+    # an explicit --all/--selected but no MODE_FILE has ever been written.
+    [[ -f "$MODE_FILE" ]] || save_mode "$mode"
 
     # Step 0: Acquire exclusive lock (non-blocking, using mkdir for atomicity)
     if mkdir "$LOCK_FILE" 2>/dev/null; then
@@ -794,18 +812,19 @@ cmd_start() {
         esac
     done
 
+    # No flag → use the mode set during setup, falling back to selected.
     if [[ -z "$mode" ]]; then
-        echo "Usage: brew autoupgrade start --all | --selected" >&2
-        exit 1
+        mode="$(default_mode)"
     fi
 
     ensure_config_dir
+    save_mode "$mode"
 
     # Warn if selected mode with empty allowlist
     if [[ "$mode" == "selected" ]]; then
         if [[ ! -f "$ALLOWLIST" || ! -s "$ALLOWLIST" ]]; then
             echo "⚠️  Warning: The allowlist is empty. The service will run but won't upgrade anything."
-            echo "   Add packages with: brew autoupgrade add <package>"
+            echo "   Add packages with: brew au add <package>"
         fi
     fi
 
@@ -857,7 +876,7 @@ PLIST
         fi
     else
         echo "Error: Failed to load the launchd service." >&2
-        echo "Try: brew autoupgrade stop && brew autoupgrade start --${mode}" >&2
+        echo "Try: brew au stop && brew au start --${mode}" >&2
         exit 1
     fi
 }
@@ -913,7 +932,7 @@ main() {
         stop)     cmd_stop ;;
         *)
             echo "Unknown command: ${command}" >&2
-            echo "Run 'brew autoupgrade help' for usage." >&2
+            echo "Run 'brew au help' for usage." >&2
             exit 1
             ;;
     esac
