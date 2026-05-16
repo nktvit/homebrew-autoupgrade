@@ -6,7 +6,7 @@ set -euo pipefail
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 PLIST_LABEL="com.brew-autoupgrade"
 
 # Resolve Homebrew prefix (Apple Silicon vs Intel)
@@ -38,8 +38,19 @@ CATCHUP_SECS=$((48 * 3600))          # 48 hours — catch-up threshold
 LOG_MAX_BYTES=$((5 * 1024 * 1024))   # 5 MB — log rotation threshold
 PLIST_INTERVAL=14400                  # 4 hours — launchd StartInterval
 
-# Resolve this script's absolute path
-SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+# Resolve this script's absolute path, following symlinks (e.g. cmd/brew-au).
+# This keeps the launchd plist pointing at the canonical script even when
+# invoked via an alias.
+SCRIPT_PATH="$0"
+while [[ -L "$SCRIPT_PATH" ]]; do
+    link_target="$(readlink "$SCRIPT_PATH")"
+    if [[ "$link_target" = /* ]]; then
+        SCRIPT_PATH="$link_target"
+    else
+        SCRIPT_PATH="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)/$link_target"
+    fi
+done
+SCRIPT_PATH="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)/$(basename "$SCRIPT_PATH")"
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -631,24 +642,44 @@ cmd_run() {
     log_msg "Starting upgrade run (mode: ${mode})"
 
     # Step 5: brew update (with timeout via background process)
+    # Note: 'brew update' also git-pulls our own tap, so the on-disk script
+    # below may differ from what we're running once update finishes. Bash holds
+    # the original inode, so the running process completes safely on the old
+    # version; the new version takes effect on the next launchd fire.
+    local pre_version="$VERSION"
     log_msg "Running 'brew update'..."
     local update_pid
     "$BREW" update --quiet >> "$LOG_FILE" 2>&1 &
     update_pid=$!
-    local waited=0
+    local waited=0 timed_out=0
     while kill -0 "$update_pid" 2>/dev/null; do
         sleep 5
         waited=$((waited + 5))
         if (( waited >= 300 )); then
             kill "$update_pid" 2>/dev/null
             wait "$update_pid" 2>/dev/null || true
+            timed_out=1
             log_msg "WARNING: 'brew update' timed out after 5 minutes."
             break
         fi
     done
-    wait "$update_pid" 2>/dev/null
-    if (( $? != 0 && waited < 300 )); then
-        log_msg "WARNING: 'brew update' failed. Continuing with stale data."
+    # If we didn't time out, reap the process and capture its real exit status.
+    # The `if !` form keeps `set -e` from killing the script on a non-zero exit,
+    # so the "continue with stale data" fallback actually runs.
+    if (( ! timed_out )); then
+        if ! wait "$update_pid" 2>/dev/null; then
+            log_msg "WARNING: 'brew update' failed. Continuing with stale data."
+        fi
+    fi
+
+    # Self-upgrade detection — if the tap pulled a new version of this script,
+    # the on-disk VERSION will differ from the one baked into the running process.
+    if [[ -f "$SCRIPT_PATH" ]]; then
+        local post_version
+        post_version="$(grep -E '^VERSION=' "$SCRIPT_PATH" 2>/dev/null | head -1 | cut -d'"' -f2)"
+        if [[ -n "$post_version" && "$post_version" != "$pre_version" ]]; then
+            log_msg "Self-upgrade: ${pre_version} → ${post_version} (active on next run)."
+        fi
     fi
 
     # Step 6: Execute upgrades
